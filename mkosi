@@ -19,6 +19,7 @@ import time
 import urllib.request
 import uuid
 import glob
+import shlex
 
 try:
     import argcomplete
@@ -343,6 +344,20 @@ def mkfs_ext4(label, mount, dev):
 def mkfs_btrfs(label, dev):
     subprocess.run(["mkfs.btrfs", "-L", label, "-d", "single", "-m", "single", dev], check=True)
 
+@complete_step('Binding a partition to a Clevis pin')
+def luks_clevis_bind(dev, pin, passphrase):
+    if pin is None:
+        return
+
+    try:
+        result = subprocess.run(["clevis", "bind", "luks", "-d", dev, "-k", "-", "-f"] + pin,
+            input=bytes(passphrase['content'], encoding='utf-8'), check=True)
+        print(str(result))
+    except subprocess.CalledProcessError as e:
+        print(str(e))
+        raise
+
+
 def luks_format(dev, passphrase):
 
     if passphrase['type'] == 'stdin':
@@ -428,7 +443,11 @@ def luks_setup_root(args, loopdev, run_build_script, inserting_squashfs=False):
         return None
 
     with complete_step("Opening LUKS root partition"):
-        return luks_open(partition(loopdev, args.root_partno), args.passphrase)
+        root = luks_open(partition(loopdev, args.root_partno), args.passphrase)
+        if args.clevis_pin:
+            luks_clevis_bind(partition(loopdev, args.root_partno), args.clevis_pin, args.passphrase)
+        return root
+
 
 def luks_setup_home(args, loopdev, run_build_script):
 
@@ -2055,6 +2074,7 @@ def parse_args():
     group.add_argument("--sign", action='store_true', help='Write and sign SHA256SUMS file')
     group.add_argument("--key", help='GPG key to use for signing')
     group.add_argument("--password", help='Set the root password')
+    group.add_argument("--clevis", dest='clevis_pin', help='Use clevis when encrypting with LUKS. Specify clevis pin here')
 
     group = parser.add_argument_group("Additional Configuration")
     group.add_argument('-C', "--directory", help='Change to specified directory before doing anything', metavar='PATH')
@@ -2360,6 +2380,9 @@ def process_setting(args, section, key, value):
         elif key == "Password":
             if args.password is None:
                 args.password = value
+        elif key == "Clevis":
+            if args.clevis_pin is None:
+                args.clevis_pin = value
         elif key is None:
             return True
         else:
@@ -2642,6 +2665,9 @@ def load_args():
 
         if args.encrypt == "all" and args.verity:
             die("'all' encryption mode may not be combined with Verity.")
+
+    if args.clevis_pin is not None:
+        args.clevis_pin = shlex.split(args.clevis_pin)
 
     if args.sign:
         args.checksum = True
